@@ -5,7 +5,8 @@ global visualize_opt;
 
 %% Option设置部分
 
-demo_forward_one = 1;                   % 单组正运动学解算
+demo_forward_one = 0;                   % 单组正运动学解算
+demo_forward_sorts = 1;                 % 多组正运动学解算
 
 % demo模式检查
 if demo_forward_one > 1
@@ -19,4 +20,7 @@ visualize_opt = 0;
 
 if demo_forward_one
     fk_1;
+end
+if demo_forward_sorts
+    fk_2;
 end

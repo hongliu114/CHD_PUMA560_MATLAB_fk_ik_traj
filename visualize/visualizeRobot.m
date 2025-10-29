@@ -20,6 +20,7 @@ function visualizeRobot(alpha, a, d, theta, varargin)
         % 创建图形窗口
         figure('Name', '六连杆机械臂3D可视化', 'NumberTitle', 'off', ...
                'Position', [100, 100, 1200, 800]);
+        hold on;
         % 绘制机械臂
         plotArmStructure(joint_positions, T_mats, p.Results);
         % 设置图形属性
