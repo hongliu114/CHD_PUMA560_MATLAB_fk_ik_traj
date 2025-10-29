@@ -18,6 +18,7 @@ function visualizeRobot(alpha, a, d, theta, varargin)
         % 计算所有关节的位置
         [joint_positions, T_mats] = computeAllJointPositions(alpha, a, d, theta);
         % 创建图形窗口
+        hold on; grid on; axis equal;
         figure('Name', '六连杆机械臂3D可视化', 'NumberTitle', 'off', ...
                'Position', [100, 100, 1200, 800]);
         hold on;

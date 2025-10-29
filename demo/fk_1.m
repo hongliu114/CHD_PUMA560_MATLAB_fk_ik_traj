@@ -55,5 +55,4 @@ function fk_1()
         'link_style', '-bo', ...
         'joint_size', 160);
 
-
 end
