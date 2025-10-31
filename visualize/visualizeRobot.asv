@@ -13,19 +13,25 @@ function visualizeRobot(alpha, a, d, theta, varargin)
     addParameter(p, 'joint_size', 50, @isnumeric);
     parse(p, varargin{:});
     
-    % 计算所有关节的位置
-    [joint_positions, T_mats] = computeAllJointPositions(alpha, a, d, theta);
-    
-    % 创建图形窗口
-    figure('Name', '六连杆机械臂3D可视化', 'NumberTitle', 'off', ...
-           'Position', [100, 100, 1200, 800]);
-    
-    % 绘制机械臂
-    plotArmStructure(joint_positions, T_mats, p.Results);
-    
-    % 设置图形属性
-    setupPlotProperties(joint_positions);
-    
-    % 添加交互控件
-    addInteractiveControls();
+    global visualize_opt;
+    if visualize_opt
+        % 计算所有关节的位置
+        [joint_positions, T_mats] = computeAllJointPositions(alpha, a, d, theta);
+        % 创建图形窗口
+        hold on; grid on; axis equal;
+        figure('Name', '六连杆机械臂3D可视化', 'NumberTitle', 'off', ...
+               'Position', [100, 100, 1200, 800]);
+        hold on;
+        % 绘制机械臂
+        plotArmStructure(joint_positions, T_mats, p.Results);
+        % 设置图形属性
+        setupPlotProperties(joint_positions);
+        % 添加交互控件
+        addInteractiveControls();
+    else
+        base_xyz = [0 0 0];
+        robot_RTB = puma560_RTB(base_xyz);
+        robot_RTB.display();
+        robot_RTB.plot(theta);
+    end
 end

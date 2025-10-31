@@ -1,0 +1,573 @@
+function trajectory_solutions = ik_2()
+% ik_2 - PUMA560机械臂连续位姿逆运动学求解函数
+% 功能: 对一组连续位姿进行逆运动学求解，取每个位姿的第一个解
+% 输出: trajectory_solutions - Nx6矩阵，每行为一个位姿的关节角解(弧度)
+
+    % 定义轨迹参数
+    x_start = -0.2;
+    x_end = 0.7;
+    x_step = 0.1;
+    y_fixed = 0.3;
+    z_fixed = 0.4;
+    
+    % 生成X坐标序列
+    x_positions = x_start:x_step:x_end;
+    num_poses = length(x_positions);
+    
+    fprintf('开始计算连续位姿轨迹...\n');
+    fprintf('轨迹参数: X从%.1f到%.1f，步进%.1f，Y=%.1f，Z=%.1f\n', ...
+            x_start, x_end, x_step, y_fixed, z_fixed);
+    fprintf('总共%d个位姿点\n\n', num_poses);
+    
+    % 存储轨迹解
+    trajectory_solutions = zeros(num_poses, 6);
+    trajectory_poses = zeros(4, 4, num_poses);
+    valid_poses = true(num_poses, 1);
+    
+    % 获取DH参数
+    [alpha, a, d, qlim1, qlim2, qlim3, qlim4, qlim5, qlim6] = puma560_dh();
+    
+    % 对每个位姿点计算逆运动学
+    for pose_idx = 1:num_poses
+        % 构造当前目标位姿
+        current_x = x_positions(pose_idx);
+        target_pose = [1, 0, 0, current_x;
+                       0, 1, 0, y_fixed;
+                       0, 0, 1, z_fixed;
+                       0, 0, 0, 1];
+        
+        trajectory_poses(:, :, pose_idx) = target_pose;
+        
+        fprintf('计算位姿 %d/%d: [%.1f, %.1f, %.1f]\n', ...
+                pose_idx, num_poses, current_x, y_fixed, z_fixed);
+        
+        % 调用单个位姿的逆运动学求解
+        solutions = solveSinglePoseIK(target_pose, alpha, a, d);
+        
+        if ~isempty(solutions)
+            % 取第一个解
+            trajectory_solutions(pose_idx, :) = solutions(1, :);
+            fprintf('  -> 找到解: [%.2f°, %.2f°, %.2f°, %.2f°, %.2f°, %.2f°]\n', ...
+                    solutions(1, :) * 180/pi);
+        else
+            valid_poses(pose_idx) = false;
+            fprintf('  -> 无解，跳过此位姿\n');
+        end
+    end
+    
+    % 移除无解的位姿
+    trajectory_solutions = trajectory_solutions(valid_poses, :);
+    trajectory_poses = trajectory_poses(:, :, valid_poses);
+    valid_count = sum(valid_poses);
+    
+    fprintf('\n轨迹计算完成！\n');
+    fprintf('有效位姿数量: %d/%d\n', valid_count, num_poses);
+    
+    if valid_count > 0
+        % 询问是否保存GIF动画
+        save_gif = askForGifSave();
+        gif_filename = '';
+        if save_gif
+            gif_filename = input('请输入GIF文件名（不含扩展名）: ', 's');
+            if isempty(gif_filename)
+                gif_filename = 'ik_trajectory_animation';
+            end
+            gif_filename = [gif_filename, '.gif'];
+            fprintf('将保存动画为: %s\n', gif_filename);
+        end
+        
+        fprintf('\n开始可视化连续轨迹...\n');
+        visualizeTrajectory(trajectory_solutions, trajectory_poses, valid_count, save_gif, gif_filename);
+    else
+        fprintf('没有有效解，无法可视化\n');
+    end
+end
+
+% function save_gif = askForGifSave()
+% % 询问用户是否保存GIF动画
+%     while true
+%         user_input = input('是否保存为GIF动画？(y/n): ', 's');
+%         if strcmpi(user_input, 'y') || strcmpi(user_input, 'yes')
+%             save_gif = true;
+%             break;
+%         elseif strcmpi(user_input, 'n') || strcmpi(user_input, 'no')
+%             save_gif = false;
+%             break;
+%         else
+%             fprintf('请输入 y 或 n\n');
+%         end
+%     end
+% end
+
+function solutions = solveSinglePoseIK(target_pose, alpha, a, d)
+% 单个位姿的逆运动学求解（基于ik_1的核心算法）
+% 输入: target_pose - 4x4目标位姿矩阵
+% 输出: solutions - 所有可能解的矩阵
+
+    % 提取目标位姿的位置和姿态信息
+    nx = target_pose(1,1); ox = target_pose(1,2); ax = target_pose(1,3); px = target_pose(1,4);
+    ny = target_pose(2,1); oy = target_pose(2,2); ay = target_pose(2,3); py = target_pose(2,4);
+    nz = target_pose(3,1); oz = target_pose(3,2); az = target_pose(3,3); pz = target_pose(3,4);
+    
+    % DH参数赋值
+    a2 = a(3); a3 = a(4); d2 = d(2); d4 = d(4);
+    
+    % 存储所有解
+    all_solutions = zeros(8, 6);
+    solution_count = 0;
+    
+    % 1) 求解theta1 - 两个解
+    rho = sqrt(px^2 + py^2);
+    
+    % 检查是否有解
+    if abs(d2/rho) > 1
+        solutions = [];
+        return;
+    end
+    
+    % theta1的两个解
+    discriminant = sqrt(px^2 + py^2 - d2^2);
+    theta1_1 = atan2(py, px) - atan2(d2, discriminant);
+    theta1_2 = atan2(py, px) - atan2(d2, -discriminant);
+    
+    theta1_solutions = [theta1_1, theta1_2];
+    
+    for i = 1:2
+        theta1 = theta1_solutions(i);
+        
+        % 2) 求解theta3 - 每个theta1对应两个解
+        k = (px^2 + py^2 + pz^2 - a2^2 - a3^2 - d2^2 - d4^2) / (2*a2);
+        
+        % 检查theta3是否有解
+        if abs(k) > sqrt(a3^2 + d4^2)
+            continue; % 跳过无解的情况
+        end
+        
+        % theta3的两个解
+        discriminant_3 = sqrt(a3^2 + d4^2 - k^2);
+        theta3_1 = atan2(a3, d4) - atan2(k, discriminant_3);
+        theta3_2 = atan2(a3, d4) - atan2(k, -discriminant_3);
+        
+        theta3_solutions = [theta3_1, theta3_2];
+        
+        for j = 1:2
+            theta3 = theta3_solutions(j);
+            
+            % 3) 求解theta2
+            s1 = sin(theta1); c1 = cos(theta1);
+            s3 = sin(theta3); c3 = cos(theta3);
+            
+            % 计算theta23
+            numerator1 = -(a3 + a2*c3)*pz + (c1*px + s1*py)*(a2*s3 - d4);
+            numerator2 = (-d4 + a2*s3)*pz + (c1*px + s1*py)*(a2*c3 + a3);
+            
+            theta23 = atan2(numerator1, numerator2);
+            theta2 = theta23 - theta3;
+            
+            % 4) 求解theta4
+            s2 = sin(theta2); c2 = cos(theta2);
+            s23 = sin(theta23); c23 = cos(theta23);
+            
+            % 检查奇异性
+            arg1 = -ax*s1 + ay*c1;
+            arg2 = -ax*c1*c23 - ay*s1*c23 + az*s23;
+            
+            if abs(arg1) < 1e-6 && abs(arg2) < 1e-6
+                % 奇异位置，任意选择theta4
+                theta4 = 0;
+            else
+                theta4 = atan2(arg1, arg2);
+            end
+            
+            % 5) 求解theta5
+            s4 = sin(theta4); c4 = cos(theta4);
+            
+            s5_arg = ax*(c1*c23*c4 + s1*s4) + ay*(s1*c23*c4 - c1*s4) - az*(s23*c4);
+            c5_arg = ax*(-c1*s23) + ay*(-s1*s23) + az*(-c23);
+            
+            theta5 = atan2(-s5_arg, c5_arg);
+            
+            % 6) 求解theta6
+            s5 = sin(theta5); c5 = cos(theta5);
+            
+            s6_arg = -nx*(c1*c23*s4 - s1*c4) - ny*(s1*c23*s4 + c1*c4) + nz*(s23*s4);
+            c6_arg = nx*((c1*c23*c4 + s1*s4)*c5 - c1*s23*s5) + ...
+                     ny*((s1*c23*c4 - c1*s4)*c5 - s1*s23*s5) - ...
+                     nz*(s23*c4*c5 + c23*s5);
+            
+            theta6 = atan2(s6_arg, c6_arg);
+            
+            % 存储解
+            solution_count = solution_count + 1;
+            all_solutions(solution_count, :) = [theta1, theta2, theta3, theta4, theta5, theta6];
+        end
+    end
+    
+    % 对于每个前三个关节的解，theta4有两个可能的解（相差π）
+    % 复制现有解并添加theta4 + π的解
+    original_count = solution_count;
+    for i = 1:original_count
+        if solution_count < 8
+            solution_count = solution_count + 1;
+            all_solutions(solution_count, :) = all_solutions(i, :);
+            all_solutions(solution_count, 4) = all_solutions(i, 4) + pi;
+            
+            % 重新计算theta5和theta6
+            theta1 = all_solutions(solution_count, 1);
+            theta2 = all_solutions(solution_count, 2);
+            theta3 = all_solutions(solution_count, 3);
+            theta4 = all_solutions(solution_count, 4);
+            
+            s1 = sin(theta1); c1 = cos(theta1);
+            s4 = sin(theta4); c4 = cos(theta4);
+            s23 = sin(theta2 + theta3); c23 = cos(theta2 + theta3);
+            
+            % 重新计算theta5
+            s5_arg = ax*(c1*c23*c4 + s1*s4) + ay*(s1*c23*c4 - c1*s4) - az*(s23*c4);
+            c5_arg = ax*(-c1*s23) + ay*(-s1*s23) + az*(-c23);
+            theta5 = atan2(-s5_arg, c5_arg);
+            
+            % 重新计算theta6
+            s5 = sin(theta5); c5 = cos(theta5);
+            s6_arg = -nx*(c1*c23*s4 - s1*c4) - ny*(s1*c23*s4 + c1*c4) + nz*(s23*s4);
+            c6_arg = nx*((c1*c23*c4 + s1*s4)*c5 - c1*s23*s5) + ...
+                     ny*((s1*c23*c4 - c1*s4)*c5 - s1*s23*s5) - ...
+                     nz*(s23*c4*c5 + c23*s5);
+            theta6 = atan2(s6_arg, c6_arg);
+            
+            all_solutions(solution_count, 5) = theta5;
+            all_solutions(solution_count, 6) = theta6;
+        end
+    end
+    
+    % 只返回有效解
+    solutions = all_solutions(1:solution_count, :);
+end
+
+function visualizeTrajectory(trajectory_solutions, trajectory_poses, num_poses, save_gif, gif_filename)
+% 可视化连续轨迹（改进版，避免每帧刷新）
+% 输入:
+%   trajectory_solutions: 轨迹关节角解
+%   trajectory_poses: 轨迹位姿
+%   num_poses: 位姿数量
+%   save_gif: 是否保存GIF
+%   gif_filename: GIF文件名
+
+    % 创建图形窗口
+    fig = figure('Name', 'PUMA560连续轨迹可视化', 'NumberTitle', 'off', ...
+                 'Position', [100, 100, 1400, 900]);
+    
+    % 创建机器人模型
+    base_xyz = [0 0 0];
+    robot_RTB = puma560_RTB(base_xyz);
+    
+    % 预定义显示范围
+    axis_range = [-0.5, 1.5];
+    
+    % 创建主绘图区域
+    ax = axes('Position', [0.1, 0.15, 0.8, 0.8]);
+    
+    % 初始化绘图（只做一次）- 修复：不获取返回值
+    theta_init = trajectory_solutions(1, :);
+    try
+        robot_RTB.plot(theta_init, 'workspace', axis_range, 'view', [45, 30], ...
+                      'nobase', 'noshadow', 'nowrist', 'nojaxes');
+    catch
+        robot_RTB.plot(theta_init);
+        view(45, 30);
+        xlim(axis_range);
+        ylim(axis_range);
+        zlim(axis_range);
+    end
+    
+    hold on;
+    
+    % 预计算所有目标点位置用于轨迹显示
+    target_positions = zeros(num_poses, 3);
+    for i = 1:num_poses
+        target_positions(i, :) = trajectory_poses(1:3, 4, i)';
+    end
+    
+    % 绘制完整轨迹路径（静态，只绘制一次）
+    h_trajectory = plot3(target_positions(:, 1), target_positions(:, 2), target_positions(:, 3), ...
+                        'b-', 'LineWidth', 2, 'DisplayName', '目标轨迹');
+    
+    % 初始化动态元素的句柄
+    h_completed = [];
+    h_future = [];
+    h_current = [];
+    h_end_effector = [];
+    h_error_line = [];
+    h_target_frame = [];
+    
+    % 创建控制按钮
+    uicontrol('Style', 'pushbutton', 'String', '暂停/继续', ...
+              'Position', [20, 20, 100, 30], ...
+              'Callback', @togglePause);
+    
+    uicontrol('Style', 'pushbutton', 'String', '重新开始', ...
+              'Position', [130, 20, 100, 30], ...
+              'Callback', @restart);
+    
+    % uicontrol('Style', 'pushbutton', 'String', '显示轨迹', ...
+    %           'Position', [240, 20, 100, 30], ...
+    %           'Callback', @toggleTrajectory);
+    
+    % % 创建速度控制滑块
+    % uicontrol('Style', 'text', 'String', '速度:', ...
+    %           'Position', [360, 25, 40, 20], 'FontSize', 10);
+    % speed_slider = uicontrol('Style', 'slider', 'Min', 0.1, 'Max', 3.0, 'Value', 1.0, ...
+    %                         'Position', [400, 20, 150, 30], ...
+    %                         'Callback', @updateSpeed);
+    
+    % 创建信息显示文本
+    info_text = uicontrol('Style', 'text', ...
+                         'Position', [570, 20, 500, 30], ...
+                         'FontSize', 12, 'FontWeight', 'bold', ...
+                         'BackgroundColor', get(fig, 'Color'));
+    
+    % 全局变量控制动画
+    global isPaused isRestart showTrajectory animationSpeed;
+    isPaused = false;
+    isRestart = false;
+    showTrajectory = true;
+    animationSpeed = 1.0;
+    
+    % 设置坐标轴属性（只设置一次）
+    xlabel('X (m)', 'FontSize', 12);
+    ylabel('Y (m)', 'FontSize', 12);
+    zlabel('Z (m)', 'FontSize', 12);
+    grid on;
+    axis equal;
+    
+    % GIF保存相关变量
+    gif_delay = 0.1; % GIF帧间延迟
+    
+    % 循环展示轨迹
+    current_pose = 1;
+    
+    while true
+        % 检查是否需要重新开始
+        if isRestart
+            current_pose = 1;
+            isRestart = false;
+        end
+        
+        % 检查窗口是否还存在
+        if ~ishandle(fig)
+            break;
+        end
+        
+        % 如果没有暂停，则更新显示
+        if ~isPaused
+            % 获取当前位姿和关节角
+            theta = trajectory_solutions(current_pose, :);
+            current_target_pose = trajectory_poses(:, :, current_pose);
+            current_target_pos = current_target_pose(1:3, 4);
+            
+            % 更新机器人位姿 - 修复：使用cla清除axes内容，然后重新绘制
+            cla(ax);
+            
+            % 重新绘制机器人
+            try
+                robot_RTB.plot(theta, 'workspace', axis_range, 'view', [45, 30], ...
+                              'nobase', 'noshadow', 'nowrist', 'nojaxes');
+            catch
+                robot_RTB.plot(theta);
+                view(45, 30);
+                xlim(axis_range);
+                ylim(axis_range);
+                zlim(axis_range);
+            end
+            
+            hold on;
+            
+            % 重新绘制轨迹路径
+            plot3(target_positions(:, 1), target_positions(:, 2), target_positions(:, 3), ...
+                  'b-', 'LineWidth', 2, 'DisplayName', '目标轨迹');
+            
+            % 显示轨迹路径
+            if showTrajectory
+                % 绘制已经过的路径点
+                if current_pose > 1
+                    plot3(target_positions(1:current_pose-1, 1), ...
+                          target_positions(1:current_pose-1, 2), ...
+                          target_positions(1:current_pose-1, 3), ...
+                          'go', 'MarkerSize', 6, 'MarkerFaceColor', 'green');
+                end
+                
+                % 绘制未来路径点
+                if current_pose < num_poses
+                    plot3(target_positions(current_pose+1:end, 1), ...
+                          target_positions(current_pose+1:end, 2), ...
+                          target_positions(current_pose+1:end, 3), ...
+                          'co', 'MarkerSize', 4, 'MarkerFaceColor', 'cyan');
+                end
+            end
+            
+            % 添加当前目标点标记
+            plot3(current_target_pos(1), current_target_pos(2), current_target_pos(3), ...
+                  'ro', 'MarkerSize', 15, 'MarkerFaceColor', 'red', 'LineWidth', 3);
+            
+            % 添加目标坐标系
+            plotTargetFrame(current_target_pose, 0.08);
+            
+            % 计算并显示末端执行器位置
+            try
+                T_end = robot_RTB.fkine(theta);
+                if isa(T_end, 'SE3')
+                    end_effector_pos = T_end.t;
+                elseif isa(T_end, 'double') && size(T_end, 1) == 4 && size(T_end, 2) == 4
+                    end_effector_pos = T_end(1:3, 4);
+                else
+                    error('Unexpected fkine output format');
+                end
+            catch
+                [alpha, a, d, ~, ~, ~, ~, ~, ~] = puma560_dh();
+                end_effector_pos = calculateEndEffectorPosition(alpha, a, d, theta);
+            end
+            
+            plot3(end_effector_pos(1), end_effector_pos(2), end_effector_pos(3), ...
+                  'mo', 'MarkerSize', 10, 'MarkerFaceColor', 'magenta', ...
+                  'MarkerEdgeColor', 'black', 'LineWidth', 2);
+            
+            % 绘制从目标点到末端执行器的连线
+            plot3([current_target_pos(1), end_effector_pos(1)], ...
+                  [current_target_pos(2), end_effector_pos(2)], ...
+                  [current_target_pos(3), end_effector_pos(3)], ...
+                  'k--', 'LineWidth', 1);
+            
+            % 计算位置误差
+            position_error = norm(current_target_pos - end_effector_pos);
+            
+            % 重新设置坐标轴属性
+            xlabel('X (m)', 'FontSize', 12);
+            ylabel('Y (m)', 'FontSize', 12);
+            zlabel('Z (m)', 'FontSize', 12);
+            grid on;
+            axis equal;
+            
+            % 设置标题
+            title(sprintf('PUMA560连续轨迹 - 位姿 %d/%d\n目标位置: [%.1f, %.1f, %.1f] | 误差: %.4f m\n关节角度: [%.1f°, %.1f°, %.1f°, %.1f°, %.1f°, %.1f°]', ...
+                         current_pose, num_poses, ...
+                         current_target_pos(1), current_target_pos(2), current_target_pos(3), ...
+                         position_error, theta * 180/pi), ...
+                  'FontSize', 12, 'FontWeight', 'bold');
+            
+            % 更新信息显示
+            set(info_text, 'String', sprintf('位姿 %d/%d | 目标: [%.1f,%.1f,%.1f]', ...
+                                            current_pose, num_poses, ...
+                                            current_target_pos(1), current_target_pos(2), current_target_pos(3)));
+            
+            hold off;
+            
+            % 保存GIF帧
+            if save_gif
+                frame = getframe(fig);
+                im = frame2im(frame);
+                [imind, cm] = rgb2ind(im, 256);
+                
+                if current_pose == 1
+                    imwrite(imind, cm, gif_filename, 'gif', 'Loopcount', inf, 'DelayTime', gif_delay);
+                    fprintf('开始保存GIF: %s\n', gif_filename);
+                else
+                    imwrite(imind, cm, gif_filename, 'gif', 'WriteMode', 'append', 'DelayTime', gif_delay);
+                end
+                
+                if current_pose == num_poses
+                    fprintf('GIF保存完成: %s\n', gif_filename);
+                end
+            end
+            
+            % 移动到下一个位姿
+            current_pose = current_pose + 1;
+            if current_pose > num_poses
+                % current_pose = 1; % 循环回到第一个位姿
+                break;
+            end
+        end
+        
+        % 根据速度控制等待时间
+        wait_time = 0.5 / animationSpeed;
+        wait_steps = max(1, round(wait_time * 10));
+        
+        for wait_step = 1:wait_steps
+            if ~ishandle(fig)
+                return;
+            end
+            pause(0.1);
+            if isPaused || isRestart
+                break;
+            end
+        end
+    end
+    
+    % 嵌套函数：暂停/继续控制
+    function togglePause(~, ~)
+        isPaused = ~isPaused;
+        if isPaused
+            fprintf('轨迹动画已暂停\n');
+        else
+            fprintf('轨迹动画继续\n');
+        end
+    end
+    
+    % 嵌套函数：重新开始控制
+    function restart(~, ~)
+        isRestart = true;
+        isPaused = false;
+        fprintf('轨迹动画重新开始\n');
+    end
+    
+    % 嵌套函数：轨迹显示控制
+    function toggleTrajectory(~, ~)
+        showTrajectory = ~showTrajectory;
+        if showTrajectory
+            fprintf('显示轨迹路径\n');
+        else
+            fprintf('隐藏轨迹路径\n');
+        end
+    end
+    
+    % 嵌套函数：速度控制
+    function updateSpeed(src, ~)
+        animationSpeed = get(src, 'Value');
+        fprintf('动画速度设置为: %.1fx\n', animationSpeed);
+    end
+end
+
+function plotTargetFrame(target_pose, scale)
+% 绘制目标坐标系
+    origin = target_pose(1:3, 4);
+    x_axis = target_pose(1:3, 1) * scale;
+    y_axis = target_pose(1:3, 2) * scale;
+    z_axis = target_pose(1:3, 3) * scale;
+    
+    % X轴 - 红色
+    quiver3(origin(1), origin(2), origin(3), ...
+            x_axis(1), x_axis(2), x_axis(3), ...
+            'r', 'LineWidth', 2, 'MaxHeadSize', 0.3);
+    
+    % Y轴 - 绿色
+    quiver3(origin(1), origin(2), origin(3), ...
+            y_axis(1), y_axis(2), y_axis(3), ...
+            'g', 'LineWidth', 2, 'MaxHeadSize', 0.3);
+    
+    % Z轴 - 蓝色
+    quiver3(origin(1), origin(2), origin(3), ...
+            z_axis(1), z_axis(2), z_axis(3), ...
+            'b', 'LineWidth', 2, 'MaxHeadSize', 0.3);
+end
+
+function end_pos = calculateEndEffectorPosition(alpha, a, d, theta)
+% 计算末端执行器位置
+    T = eye(4);
+    for i = 1:6
+        T_i = [cos(theta(i)), -sin(theta(i))*cos(alpha(i)), sin(theta(i))*sin(alpha(i)), a(i)*cos(theta(i));
+               sin(theta(i)), cos(theta(i))*cos(alpha(i)), -cos(theta(i))*sin(alpha(i)), a(i)*sin(theta(i));
+               0, sin(alpha(i)), cos(alpha(i)), d(i);
+               0, 0, 0, 1];
+        T = T * T_i;
+    end
+    end_pos = T(1:3, 4);
+end

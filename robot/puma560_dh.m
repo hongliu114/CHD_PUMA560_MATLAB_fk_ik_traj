@@ -6,7 +6,8 @@ function [alpha,a,d,qlim1,qlim2,qlim3,qlim4,qlim5,qlim6] = puma560_dh()
     alpha(3)=0;     a(3)=0.432; d(3)=0;     
     alpha(4)=-pi/2; a(4)=0.02;  d(4)=0.433;  
     alpha(5)=pi/2;  a(5)=0;     d(5)=0;     
-    alpha(6)=-pi/2; a(6)=0;     d(6)=0.056;     
+    % alpha(6)=-pi/2; a(6)=0;     d(6)=0.056;     
+    alpha(6)=-pi/2; a(6)=0;     d(6)=0;     
 
     qlim1=[-160, 160]/180*pi;
     qlim2=[-225, 45]/180*pi;

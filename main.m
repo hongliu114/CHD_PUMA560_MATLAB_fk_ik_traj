@@ -8,10 +8,13 @@ global visualize_opt;
 
 demo_forward_one = 0;                   % 单组正运动学解算
 demo_forward_sorts = 0;                 % 多组正运动学解算（随机生成）
-demo_forward_video = 1;                 % 正运动学运动演示
+demo_forward_video = 0;                 % 正运动学运动演示
+demo_inverse_one = 0;                   % 单点逆运动学解算
+demo_inverse_sort = 1;                  % 多点逆运动学解算
+test = 0;
 
 % demo模式检查
-if demo_forward_one+demo_forward_sorts+demo_forward_video > 1
+if demo_forward_one+demo_forward_sorts+demo_forward_video+demo_inverse_one+demo_inverse_sort > 1
     error('一次只能运行一个选项')
 end
 
@@ -28,4 +31,13 @@ if demo_forward_sorts
 end
 if demo_forward_video
     fk_3;
+end
+if demo_inverse_one
+    ik_1;
+end
+if demo_inverse_sort
+    ik_2;
+end
+if test
+    puma560_trajectory_custom_ik();
 end
